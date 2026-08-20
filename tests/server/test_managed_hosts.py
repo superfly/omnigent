@@ -30,6 +30,7 @@ from omnigent.server.managed_hosts import (
     KUBERNETES_MANAGED_TOKEN_TTL_S,
     MODAL_MANAGED_TOKEN_TTL_S,
     OPENSHELL_MANAGED_TOKEN_TTL_S,
+    SPRITES_MANAGED_TOKEN_TTL_S,
     ManagedLaunch,
     ManagedLaunchTracker,
     ManagedSandboxConfig,
@@ -266,6 +267,62 @@ def test_parse_daytona_without_section_defaults(
     assert cfg.launcher_factory() is fake
     assert fake.image is None
     assert fake.env is None
+
+
+def test_parse_valid_sprites_config_builds_parameterized_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented Sprites block reaches the managed launcher intact."""
+    cfg = parse_sandbox_config(
+        {
+            "provider": "sprites",
+            "server_url": "https://srv.example.com/",
+            "sprites": {
+                "api_url": "https://api.example.test",
+                "env": ["ANTHROPIC_API_KEY", "GIT_TOKEN"],
+                "runtime": "dev",
+                "install_spec": "omnigent @ https://example.test/omnigent.whl",
+            },
+        }
+    )
+    assert cfg is not None
+    parsed = cfg.default
+    assert parsed.server_url == "https://srv.example.com"
+    assert parsed.token_ttl_s == SPRITES_MANAGED_TOKEN_TTL_S
+    assert parsed.managed_launch_supported is True
+    assert parsed.provider == "sprites"
+
+    captured: dict[str, object] = {}
+
+    def _ctor(**kwargs: object) -> FakeSandboxLauncher:
+        captured.update(kwargs)
+        fake = FakeSandboxLauncher()
+        fake.provider = "sprites"
+        return fake
+
+    monkeypatch.setattr(
+        "omnigent.onboarding.sandboxes.sprites.SpritesSandboxLauncher",
+        _ctor,
+    )
+    assert parsed.launcher_factory().provider == "sprites"
+    assert captured == {
+        "api_url": "https://api.example.test",
+        "env": ["ANTHROPIC_API_KEY", "GIT_TOKEN"],
+        "runtime": "dev",
+        "install_spec": "omnigent @ https://example.test/omnigent.whl",
+    }
+
+
+def test_parse_sprites_rejects_unknown_config_key() -> None:
+    """Operator typos in the provider block fail during server startup."""
+    with pytest.raises(ValueError, match=r"sandbox\.sprites"):
+        parse_sandbox_config(
+            {
+                "provider": "sprites",
+                "server_url": "https://srv.example.com",
+                "sprites": {"enb": ["ANTHROPIC_API_KEY"]},
+            }
+        )
 
 
 def test_parse_valid_blaxel_config_builds_parameterized_factory(
