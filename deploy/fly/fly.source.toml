@@ -7,7 +7,8 @@ app = "omnigent"
 primary_region = "iad"
 
 [build]
-  dockerfile = "deploy/docker/Dockerfile"
+  # Fly resolves this relative to this config file's directory.
+  dockerfile = "../docker/Dockerfile"
 
 [env]
   HOST = "0.0.0.0"

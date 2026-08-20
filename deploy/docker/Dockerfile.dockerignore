@@ -24,6 +24,9 @@ venv/
 # Dockerfile's `npm ci` step — breaking `npm run build` with
 # "tsc: not found" if the host install was incomplete or wrong-platform.
 node_modules/
+# flyctl's build-context matcher treats the unqualified pattern as root-only.
+# Keep the explicit workspace path so a local frontend install is not uploaded.
+web/node_modules/
 
 # Test + dev artifacts
 tests/
