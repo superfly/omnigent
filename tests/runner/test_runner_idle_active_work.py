@@ -294,6 +294,23 @@ async def test_done_approval_future_does_not_pin_runner() -> None:
 
 
 @pytest.mark.asyncio
+async def test_running_native_pane_blocks_idle_shutdown() -> None:
+    """A Claude-native tool keeps the runner active after its turn slot clears."""
+    app = _scaffold_app()
+    app.state.native_pane_status["conv_native"] = "running"
+    assert app.state.has_active_work() is True
+
+    async def _release() -> None:
+        app.state.native_pane_status["conv_native"] = "idle"
+
+    await _assert_monitor_blocked_then_shuts_down(
+        has_active_work=app.state.has_active_work,
+        release=_release,
+    )
+    assert app.state.has_active_work() is False
+
+
+@pytest.mark.asyncio
 async def test_drain_session_streams_enqueues_done_sentinel() -> None:
     """Graceful shutdown signals end-of-stream to every open session stream.
 
