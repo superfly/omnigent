@@ -1338,6 +1338,7 @@ def build_hook_settings(
     launch_effort: str | None = None,
     subagent_router_dir: Path | None = None,
     turn_routing: bool = False,
+    accept_bypass_permissions_warning: bool = False,
 ) -> _JsonObject:
     """
     Build invocation-local Claude Code hook settings.
@@ -1376,6 +1377,9 @@ def build_hook_settings(
         routing round trip (25s worst case on a degraded server) in front of
         every prompt of every native session, to be told every time that the
         session does not route.
+    :param accept_bypass_permissions_warning: Persist Claude Code's
+        invocation-local acknowledgement of its one-time bypass-permissions
+        warning. Callers must restrict this to sandboxed launches.
     :returns: JSON-serializable Claude settings fragment.
     """
     python = python_executable or sys.executable
@@ -1619,6 +1623,8 @@ def build_hook_settings(
         settings["permissions"] = {"defaultMode": launch_permission_mode}
     if launch_effort and launch_effort in CLAUDE_EFFORTS:
         settings["effortLevel"] = launch_effort
+    if accept_bypass_permissions_warning:
+        settings["skipDangerousModePermissionPrompt"] = True
     if api_key_helper:
         settings["apiKeyHelper"] = api_key_helper
     # Override Claude Code's statusLine so we receive its stdin (the
@@ -1717,6 +1723,7 @@ def augment_claude_args(
     allowed_tools: tuple[str, ...] = (),
     subagent_router_dir: Path | None = None,
     turn_routing: bool = False,
+    accept_bypass_permissions_warning: bool = False,
 ) -> list[str]:
     """
     Return Claude CLI args with Omnigent MCP/hook/skill injection.
@@ -1764,6 +1771,9 @@ def augment_claude_args(
         Routing on, threaded to :func:`build_hook_settings` so the
         ``UserPromptSubmit`` first-message routing hook is registered.
         ``False`` keeps every prompt off the routing round trip.
+    :param accept_bypass_permissions_warning: Include Claude Code's startup
+        acknowledgement in the invocation-local settings payload. Callers
+        must restrict this to sandboxed launches.
     :returns: Augmented argument list for the terminal resource.
     """
     mcp_config = build_mcp_config(bridge_dir, python_executable=python_executable)
@@ -1778,6 +1788,7 @@ def augment_claude_args(
         launch_effort=_arg_value(claude_args, "--effort"),
         subagent_router_dir=subagent_router_dir,
         turn_routing=turn_routing,
+        accept_bypass_permissions_warning=accept_bypass_permissions_warning,
     )
     args = _merge_disallowed_tools(list(claude_args), _OMNIGENT_DISALLOWED_TOOLS)
     args = _merge_allowed_tools(args, allowed_tools)

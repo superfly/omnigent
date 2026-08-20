@@ -2386,6 +2386,7 @@ def create_app(
         """
         from omnigent.server.routes.sessions import (
             RUNNER_DISCONNECT_GRACE_S,
+            _managed_wake_sessions,
             _mark_runner_sessions_offline,
         )
         from omnigent.server.schemas import ErrorDetail
@@ -2407,6 +2408,7 @@ def create_app(
         affected = await asyncio.to_thread(
             conversation_store.list_conversations_by_runner_id, runner_id
         )
+        affected = [conv for conv in affected if conv.id not in _managed_wake_sessions]
         _logger.warning(
             "Runner %s disconnected; reconciling %d bound session(s)",
             runner_id,
@@ -2535,6 +2537,7 @@ def create_app(
         """
         from omnigent.server.routes.sessions import (
             _ensure_runner_relay,
+            _managed_wake_sessions,
             _publish_runner_recovered_status,
             prefetch_session_routing_catalogs,
         )
@@ -2561,6 +2564,14 @@ def create_app(
             len(convs),
         )
         for conv in convs:
+            if conv.id in _managed_wake_sessions:
+                _logger.info(
+                    "_on_runner_connect: ignoring transient runner %s for "
+                    "managed-waking session %s",
+                    runner_id,
+                    conv.id,
+                )
+                continue
             _logger.info(
                 "_on_runner_connect: matched %s (agent=%s)",
                 conv.id,
