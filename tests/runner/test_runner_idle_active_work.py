@@ -311,6 +311,14 @@ async def test_running_native_pane_blocks_idle_shutdown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_waiting_native_pane_does_not_pin_runner() -> None:
+    """Turn-ended ``waiting`` state lets the Sprite activity lease drain."""
+    app = _scaffold_app()
+    app.state.native_pane_status["conv_native"] = "waiting"
+    assert app.state.has_active_work() is False
+
+
+@pytest.mark.asyncio
 async def test_drain_session_streams_enqueues_done_sentinel() -> None:
     """Graceful shutdown signals end-of-stream to every open session stream.
 

@@ -2104,7 +2104,12 @@ def create_runner_app(
     def _has_active_work() -> bool:
         if _active_turns:
             return True
-        if any(status in {"running", "waiting"} for status in _native_pane_status.values()):
+        # ``waiting`` is the session-level turn-ended state (for example,
+        # background work outliving the response), not Claude's interactive
+        # permission/input wait. The latter is normalized to ``running`` by
+        # claude_native_status_file. Counting session ``waiting`` here pins the
+        # Sprite activity task forever after an otherwise completed turn.
+        if any(status == "running" for status in _native_pane_status.values()):
             return True
         if _has_live_async_tasks(_session_async_tasks):
             return True
