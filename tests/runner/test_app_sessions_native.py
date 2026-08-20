@@ -63,6 +63,7 @@ from omnigent.runner.app import (
     _auto_create_pi_terminal,
     _auto_create_repl_terminal,
     _deliver_subagent_wake_post,
+    _has_running_native_pane,
     _KiroNativeLaunchConfig,
     _load_claude_launch_metadata,
     _log_terminal_lookup_miss,
@@ -4483,6 +4484,13 @@ async def test_has_active_work_reports_process_manager_turns() -> None:
     pm.mark_turn_active("8e32600337d08f59ad381caf96a90659")
 
     assert app.state.has_active_work() is True
+
+
+def test_has_running_native_pane_tracks_only_running_status() -> None:
+    """Native autonomous work pins lifecycle guards until its idle edge."""
+    assert _has_running_native_pane({"conv_native": "running"}) is True
+    assert _has_running_native_pane({"conv_native": "idle"}) is False
+    assert _has_running_native_pane({"conv_native": "failed"}) is False
 
 
 @pytest.mark.asyncio
@@ -14483,6 +14491,11 @@ async def test_auto_create_claude_terminal_registers_permission_hook(
     monkeypatch.setattr(claude_native_bridge, "_TRUSTED_PARENT", tmp_path)
     monkeypatch.setattr(claude_native_bridge, "_BRIDGE_ROOT", tmp_path / "root")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
+    # Sprites and other managed sandboxes advertise this boundary. Claude
+    # Code may enter bypass mode from the sandbox environment without an
+    # explicit bypass argv flag, so the invocation settings must acknowledge
+    # its unhookable startup warning based on this signal alone.
+    monkeypatch.setenv("IS_SANDBOX", "1")
 
     token_calls: list[int] = []
 
@@ -14561,6 +14574,7 @@ async def test_auto_create_claude_terminal_registers_permission_hook(
     args = spec.args
     assert "--append-system-prompt" not in args
     settings = json.loads(args[args.index("--settings") + 1])
+    assert settings["skipDangerousModePermissionPrompt"] is True
     assert "PermissionRequest" in settings["hooks"]
     permission_hook = settings["hooks"]["PermissionRequest"][0]["hooks"][0]
     assert permission_hook["type"] == "command"

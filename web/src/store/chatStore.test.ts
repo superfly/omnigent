@@ -1958,6 +1958,30 @@ describe("chatStore — send (first-send ordering)", () => {
     expect(useChatStore.getState().pendingUserMessages).toHaveLength(1);
   });
 
+  it("rebind drops a posted optimistic bubble whose message already committed", async () => {
+    seedSession("conv_existing", [userMessage("resp_committed", "initial prompt")]);
+    useChatStore.setState({
+      conversationId: "conv_existing",
+      abortController: null,
+      pendingUserMessages: [
+        {
+          tempId: "pend_stale",
+          content: [{ type: "input_text", text: "initial prompt" }],
+          posted: true,
+        },
+      ],
+    });
+
+    await useChatStore.getState().send("follow up", "agent_xyz");
+
+    const state = useChatStore.getState();
+    expect(state.pendingUserMessages).toHaveLength(1);
+    expect(state.pendingUserMessages[0]?.content).toEqual([
+      { type: "input_text", text: "follow up" },
+    ]);
+    expect(state.blocks.filter((b) => b.type === "user_message")).toHaveLength(1);
+  });
+
   it("degrades gracefully when stream rebind fails — message still posts", async () => {
     useChatStore.setState({
       conversationId: "conv_existing",

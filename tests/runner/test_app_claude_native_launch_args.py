@@ -18,7 +18,10 @@ from omnigent.claude_native import (
     ClaudeNativeUcodeConfig,
     build_native_claude_terminal_env,
 )
-from omnigent.runner.app import _build_claude_native_base_args, _claude_terminal_env_unset
+from omnigent.runner.app import (
+    _build_claude_native_base_args,
+    _claude_terminal_env_unset,
+)
 
 
 @pytest.mark.parametrize(

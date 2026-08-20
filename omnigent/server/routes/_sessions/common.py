@@ -395,6 +395,9 @@ _interrupt_fenced_sessions: set[str] = set()
 _intentional_stop_sessions: set[str] = set()
 
 
+_managed_wake_sessions: set[str] = set()
+
+
 _TERMINAL_RESPONSE_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "response.completed",
@@ -789,6 +792,7 @@ __all__ = [
     "_interrupt_fenced_sessions",
     "_logger",
     "_managed_launch_tasks",
+    "_managed_wake_sessions",
     "_model_options_cache",
     "_model_options_inflight",
     "_native_ask_gate_locks",

@@ -2503,6 +2503,7 @@ export function shouldShowWorkingIndicator(showsWorking: boolean, bubbles: Bubbl
  */
 const SANDBOX_STAGE_LABELS: Record<string, string | undefined> = {
   provisioning: "Provisioning sandbox",
+  waking: "Waking sandbox",
   cloning: "Cloning repository",
   starting: "Connecting host",
   connecting: "Starting agent",

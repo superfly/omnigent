@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -19,6 +20,7 @@ import time
 from collections.abc import AsyncIterator, Callable, Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI
@@ -53,7 +55,18 @@ _GRACEFUL_SHUTDOWN_TUNNEL_TIMEOUT_S = 15.0
 # expires, so a live session's HTTP callbacks never present an expired
 # token. Well under the server-side token TTL.
 _MANAGED_MINT_REFRESH_SKEW_S = 300.0
+_SPRITE_MANAGEMENT_SOCKET = Path("/.sprite/api.sock")
+_SPRITE_TASK_EXPIRE = "5m"
+_SPRITE_TASK_REFRESH_INTERVAL_S = 60.0
+_SPRITE_TASK_POLL_INTERVAL_S = 1.0
+_SPRITE_TASK_RETRY_INTERVAL_S = 5.0
 _logger = logging.getLogger(__name__)
+
+
+def _sprite_activity_task_name(runner_id: str) -> str:
+    """Return a Sprite Tasks API-compatible lease name for *runner_id*."""
+    normalized = re.sub(r"[^a-z0-9-]+", "-", runner_id.lower()).strip("-")
+    return f"omnigent-{normalized or 'runner'}"
 
 
 def _server_url_from_env() -> str:
@@ -173,6 +186,93 @@ async def _run_inactivity_monitor(
             request_shutdown()
             return
         await asyncio.sleep(min(poll_interval_s, idle_timeout_s - elapsed_s))
+
+
+async def _run_sprite_activity_lease(
+    *,
+    has_active_work: Callable[[], bool],
+    task_name: str,
+    client: httpx.AsyncClient | None = None,
+    poll_interval_s: float = _SPRITE_TASK_POLL_INTERVAL_S,
+    refresh_interval_s: float = _SPRITE_TASK_REFRESH_INTERVAL_S,
+) -> None:
+    """Hold a Sprite active only while its runner is doing agent work.
+
+    Sprites may suspend an otherwise-idle service even though it has an
+    outbound WebSocket. The local Tasks API prevents that suspension while a
+    turn is active. A five-minute lease is refreshed every minute and deleted
+    as soon as work drains; if the runner crashes, the short expiry releases
+    the hold without cleanup.
+
+    ``client`` and the timing arguments are injectable for deterministic unit
+    tests. Production callers only start this coroutine when
+    :data:`_SPRITE_MANAGEMENT_SOCKET` exists.
+
+    :param has_active_work: Callback returning whether delivery-critical agent
+        work is outstanding.
+    :param task_name: Unique task name for this runner.
+    :param client: Optional preconfigured Tasks API client.
+    :param poll_interval_s: Active-state polling cadence.
+    :param refresh_interval_s: Successful lease refresh cadence.
+    :returns: None; runs until cancelled.
+    """
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(
+            base_url="http://sprite",
+            transport=httpx.AsyncHTTPTransport(uds=str(_SPRITE_MANAGEMENT_SOCKET)),
+            timeout=5.0,
+        )
+    task_path = f"/v1/tasks/{quote(task_name, safe='')}"
+    held = False
+    next_refresh_at = 0.0
+    next_release_at = 0.0
+    loop = asyncio.get_running_loop()
+
+    async def _delete(*, quiet: bool = False) -> bool:
+        """Best-effort lease release; a missing task is already released."""
+        try:
+            response = await client.delete(task_path)
+            if response.status_code != 404:
+                response.raise_for_status()
+        except httpx.HTTPError:
+            if not quiet:
+                _logger.warning("failed to release Sprite activity task", exc_info=True)
+            return False
+        return True
+
+    try:
+        while True:
+            active = has_active_work()
+            now = loop.time()
+            if active and now >= next_refresh_at:
+                try:
+                    response = await client.put(
+                        task_path,
+                        json={"expire": _SPRITE_TASK_EXPIRE},
+                    )
+                    response.raise_for_status()
+                except httpx.HTTPError:
+                    _logger.warning(
+                        "failed to refresh Sprite activity task; active work may be suspended",
+                        exc_info=True,
+                    )
+                    next_refresh_at = now + _SPRITE_TASK_RETRY_INTERVAL_S
+                else:
+                    held = True
+                    next_refresh_at = now + refresh_interval_s
+                    next_release_at = 0.0
+            elif not active and held and now >= next_release_at:
+                if await _delete():
+                    held = False
+                else:
+                    next_release_at = now + _SPRITE_TASK_RETRY_INTERVAL_S
+            await asyncio.sleep(poll_interval_s)
+    finally:
+        if held:
+            await _delete(quiet=True)
+        if owns_client:
+            await client.aclose()
 
 
 class _RunnerDatabricksAuth(httpx.Auth):
@@ -1315,6 +1415,15 @@ async def _run_tunnel_from_env() -> None:
             ),
             name=f"runner-idle-monitor:{runner_id}",
         )
+    sprite_activity_task: asyncio.Task[None] | None = None
+    if _SPRITE_MANAGEMENT_SOCKET.exists():
+        sprite_activity_task = asyncio.create_task(
+            _run_sprite_activity_lease(
+                has_active_work=_has_active_work,
+                task_name=_sprite_activity_task_name(runner_id),
+            ),
+            name=f"runner-sprite-activity:{runner_id}",
+        )
     if parent_pid is not None:
 
         def _request_parent_death_shutdown() -> None:
@@ -1377,6 +1486,10 @@ async def _run_tunnel_from_env() -> None:
         if idle_task is not None:
             with contextlib.suppress(asyncio.CancelledError):
                 await idle_task
+        if sprite_activity_task is not None:
+            sprite_activity_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sprite_activity_task
         await _lifespan_cm.__aexit__(None, None, None)
 
 

@@ -2442,6 +2442,7 @@ def create_app(
         :param runner_id: The disconnected runner's id.
         """
         from omnigent.server.routes.sessions import (
+            _managed_wake_sessions,
             _publish_status,
             _session_status_cache,
         )
@@ -2488,6 +2489,14 @@ def create_app(
             len(affected),
         )
         for session_id in affected:
+            if session_id in _managed_wake_sessions:
+                _logger.info(
+                    "Runner %s disconnected during managed wake for session %s; "
+                    "skipping offline marking",
+                    runner_id,
+                    session_id,
+                )
+                continue
             _session_status_cache[session_id] = "failed"
             _publish_status(session_id, "failed")
 
@@ -2542,6 +2551,7 @@ def create_app(
         """
         from omnigent.server.routes.sessions import (
             _ensure_runner_relay,
+            _managed_wake_sessions,
             _publish_runner_recovered_status,
         )
 
@@ -2567,6 +2577,14 @@ def create_app(
             len(convs),
         )
         for conv in convs:
+            if conv.id in _managed_wake_sessions:
+                _logger.info(
+                    "_on_runner_connect: ignoring transient runner %s for "
+                    "managed-waking session %s",
+                    runner_id,
+                    conv.id,
+                )
+                continue
             _logger.info(
                 "_on_runner_connect: matched %s (agent=%s)",
                 conv.id,

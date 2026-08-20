@@ -136,6 +136,9 @@ modal = ["modal>=1.0,<2"]
 # server-managed `sandbox.provider: daytona`).
 # Same lazy-import posture as the modal extra. Pre-1.0 SDK: pin minor.
 daytona = ["daytona>=0.180,<1"]
+# Sprites managed sandbox launcher. The launcher module ships in the base
+# package and imports the SDK lazily; only Sprites deployments need it.
+sprites = ["sprites-py>=0.4,<1"]
 # Boxlite sandbox launcher: server-managed `sandbox.provider: boxlite`, either
 # local embedded micro-VMs (KVM/HVF, no daemon) or a remote `boxlite serve`
 # pool. Same lazy-import posture as the modal/daytona extras. Pre-1.0 SDK: pin
@@ -632,6 +635,12 @@ ignore_missing_imports = true
 # posture as modal above.
 [[tool.mypy.overrides]]
 module = "daytona.*"
+ignore_missing_imports = true
+
+# sprites-py is an optional dep (the `sprites` extra); same lazy-import
+# posture as modal above.
+[[tool.mypy.overrides]]
+module = "sprites.*"
 ignore_missing_imports = true
 
 # hindsight-client is an optional dep (the `hindsight` extra); the

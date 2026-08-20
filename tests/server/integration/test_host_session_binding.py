@@ -1171,16 +1171,40 @@ async def test_resumable_managed_wake_drops_fresh_local_tunnels_when_provider_pa
     fresh_host_conn = SimpleNamespace(last_frame_at=time.time())
     fresh_runner_session = object()
     host_registry_state: dict[str, object | None] = {"conn": fresh_host_conn}
+    relay_started = asyncio.Event()
+    relay_cancelled = asyncio.Event()
+
+    async def _stale_relay() -> None:
+        relay_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            relay_cancelled.set()
+
+    relay_task = asyncio.create_task(_stale_relay())
+    await relay_started.wait()
+    sessions_module._runner_relay_tasks[conv.id] = sessions_module._RelayHandle(
+        runner_id="runner_stale_tunnel",
+        task=relay_task,
+        ready=asyncio.Event(),
+    )
 
     def _finish_wake(**kwargs: object) -> None:
         del kwargs
+        assert conv.id in sessions_module._managed_wake_sessions
         calls.append("wake")
         tracker.begin(conv.id)
         tracker.finish(conv.id)
+        sessions_module._managed_wake_sessions.discard(conv.id)
 
     def _deregister_host(host_id: str) -> None:
         host_deregistered.append(host_id)
         host_registry_state["conn"] = None
+
+    def _deregister_runner(runner_id: str) -> None:
+        assert relay_cancelled.is_set()
+        assert conv.id in sessions_module._managed_wake_sessions
+        runner_deregistered.append(runner_id)
 
     monkeypatch.setattr(sessions_module, "_kick_managed_wake", _finish_wake)
     app_state = SimpleNamespace(
@@ -1194,22 +1218,28 @@ async def test_resumable_managed_wake_drops_fresh_local_tunnels_when_provider_pa
         tunnel_registry=SimpleNamespace(
             get=lambda _runner_id: fresh_runner_session,
             seconds_since_last_frame=lambda _session: 0.0,
-            deregister=lambda runner_id: runner_deregistered.append(runner_id),
+            deregister=_deregister_runner,
         ),
     )
 
-    assert (
-        await sessions_module._maybe_wake_stale_resumable_managed_sandbox(
-            session_id=conv.id,
-            conv=conv,
-            app_state=app_state,
-            conversation_store=conv_store,
+    try:
+        assert (
+            await sessions_module._maybe_wake_stale_resumable_managed_sandbox(
+                session_id=conv.id,
+                conv=conv,
+                app_state=app_state,
+                conversation_store=conv_store,
+            )
+            is True
         )
-        is True
-    )
-    assert calls == ["wake"]
-    assert host_deregistered == ["055e31f38d07908f171ebad4ff5cbe9c"]
-    assert runner_deregistered == ["runner_stale_tunnel"]
+        assert calls == ["wake"]
+        assert host_deregistered == ["055e31f38d07908f171ebad4ff5cbe9c"]
+        assert runner_deregistered == ["runner_stale_tunnel"]
+    finally:
+        sessions_module._runner_relay_tasks.pop(conv.id, None)
+        sessions_module._managed_wake_sessions.discard(conv.id)
+        if not relay_task.done():
+            relay_task.cancel()
 
 
 async def test_managed_wake_fails_when_runner_never_reconnects(
@@ -1272,6 +1302,80 @@ async def test_managed_wake_fails_when_runner_never_reconnects(
     assert launch.settled.is_set()
     assert launch.error == "managed runner did not connect after launch"
     assert stages[-1] == ("failed", "managed runner did not connect after launch")
+
+
+async def test_managed_wake_retires_stale_relay_before_provider_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider restart cannot turn an intentional old-runner drop into failure."""
+    from omnigent.server.routes import sessions as sessions_module
+
+    session_id = "72a0a7ac6d4e4a608f1cb9b7b434190d"
+    conv = SimpleNamespace(
+        id=session_id,
+        host_id="a132736385e143a4a004bec8b8214650",
+        workspace="/root/workspace",
+        agent_id=None,
+        sub_agent_name=None,
+    )
+    tracker = ManagedLaunchTracker()
+    tracker.begin(session_id)
+    relay_started = asyncio.Event()
+    relay_cancelled = asyncio.Event()
+    resume_ran = False
+
+    async def _stale_relay() -> None:
+        relay_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            relay_cancelled.set()
+
+    relay_task = asyncio.create_task(_stale_relay())
+    await relay_started.wait()
+    sessions_module._runner_relay_tasks[session_id] = sessions_module._RelayHandle(
+        runner_id="runner_before_sleep",
+        task=relay_task,
+        ready=asyncio.Event(),
+    )
+
+    async def _resume_asserts_relay_retired(*_args: object, **_kwargs: object) -> None:
+        nonlocal resume_ran
+        assert relay_cancelled.is_set()
+        assert relay_task.cancelled()
+        resume_ran = True
+
+    async def _launch_runner(*_args: object, **_kwargs: object) -> object:
+        return sessions_module._HostLaunchAttempt(runner_id=None)
+
+    monkeypatch.setattr(
+        "omnigent.server.managed_hosts.resume_managed_host",
+        _resume_asserts_relay_retired,
+    )
+    monkeypatch.setattr(sessions_module, "_launch_runner_on_host", _launch_runner)
+
+    try:
+        await sessions_module._run_managed_wake(
+            session_id=session_id,
+            conv=conv,  # type: ignore[arg-type]
+            sandbox_config=ManagedSandboxConfig(
+                server_url="https://managed-test.example.com",
+                launcher_factory=lambda: FakeSandboxLauncher(),
+                token_ttl_s=3600,
+            ),
+            tracker=tracker,
+            conversation_store=SimpleNamespace(get_conversation=lambda _sid: conv),
+            host_store=SimpleNamespace(),
+            host_registry=SimpleNamespace(get=lambda _host_id: object()),
+            tunnel_registry=None,
+        )
+
+        assert resume_ran is True
+        assert tracker.get(session_id) is None
+    finally:
+        sessions_module._runner_relay_tasks.pop(session_id, None)
+        if not relay_task.done():
+            relay_task.cancel()
 
 
 async def test_managed_launch_fails_when_runner_never_connects(

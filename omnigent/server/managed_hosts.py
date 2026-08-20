@@ -32,7 +32,8 @@ stores into ``create_app``):
    ``<data_dir>/config.yaml``)::
 
        sandbox:
-         provider: modal          # lakebox|modal|daytona|boxlite|cwsandbox|islo|e2b|openshell
+         # lakebox|modal|daytona|sprites|boxlite|cwsandbox|islo|e2b|openshell
+         provider: modal
          server_url: https://omnigent.example.com
          host_config:             # optional; provider-agnostic. Verbatim
                                   # in-sandbox ~/.omnigent/config.yaml content,
@@ -68,6 +69,11 @@ stores into ``create_app``):
            env: [OPENAI_API_KEY, GIT_TOKEN]  # SERVER env var NAMES whose
                                              # values are injected as
                                              # sandbox env
+         sprites:                 # optional block (provider: sprites)
+           env: [OPENAI_API_KEY, GIT_TOKEN]  # SERVER env var NAMES injected
+           runtime: default       # optional: default|dev
+           install_spec: omnigent==0.7.0  # optional pip requirement
+           api_url: https://api.sprites.dev  # optional API override
          islo:                    # optional block (provider: islo)
            image: docker.io/me/omnigent-host:latest  # default: official image
            env: [OPENAI_API_KEY, GIT_TOKEN]  # SERVER env var NAMES injected
@@ -94,15 +100,16 @@ stores into ``create_app``):
    (12-factor): the Modal launcher reads ``MODAL_TOKEN_ID`` /
    ``MODAL_TOKEN_SECRET`` (or ``~/.modal.toml``) and the Daytona
    launcher reads ``DAYTONA_API_KEY`` (plus optional
-   ``DAYTONA_API_URL`` / ``DAYTONA_TARGET``), and the Islo launcher
-   reads ``ISLO_API_KEY`` (plus optional ``ISLO_BASE_URL``) from the
-   server process environment. The OpenShell launcher needs no API key:
+   ``DAYTONA_API_URL`` / ``DAYTONA_TARGET``), the Sprites launcher reads
+   ``SPRITE_TOKEN`` (plus optional ``SPRITES_API_URL``), and the Islo
+   launcher reads ``ISLO_API_KEY`` (plus optional ``ISLO_BASE_URL``)
+   from the server process environment. The OpenShell launcher needs no API key:
    it connects to the gateway made active with ``openshell gateway
    select`` (``$OPENSHELL_GATEWAY`` / ``~/.config/openshell/active_gateway``,
    or ``sandbox.openshell.cluster``), so the server process needs
-   OpenShell gateway access. ``modal``, ``daytona``, ``cwsandbox``,
-   ``islo``, and ``openshell`` have managed-launch support; ``lakebox``
-   parses but rejects at launch.
+   OpenShell gateway access. ``modal``, ``daytona``, ``sprites``,
+   ``cwsandbox``, ``islo``, and ``openshell`` have managed-launch
+   support; ``lakebox`` parses but rejects at launch.
 
 2. **Direct construction** (embedding deployments): build
    :class:`ManagedSandboxConfig` with a custom
@@ -154,6 +161,7 @@ SUPPORTED_SANDBOX_PROVIDERS: frozenset[str] = frozenset(
         "lakebox",
         "modal",
         "daytona",
+        "sprites",
         "boxlite",
         "cwsandbox",
         "islo",
@@ -163,7 +171,17 @@ SUPPORTED_SANDBOX_PROVIDERS: frozenset[str] = frozenset(
     }
 )
 PROVIDERS_WITH_MANAGED_LAUNCH: frozenset[str] = frozenset(
-    {"modal", "daytona", "boxlite", "cwsandbox", "islo", "e2b", "openshell", "kubernetes"}
+    {
+        "modal",
+        "daytona",
+        "sprites",
+        "boxlite",
+        "cwsandbox",
+        "islo",
+        "e2b",
+        "openshell",
+        "kubernetes",
+    }
 )
 
 # How long a managed launch waits for the sandboxed host to register
@@ -190,6 +208,11 @@ MODAL_MANAGED_TOKEN_TTL_S = 25 * 3600
 # session past 7 days going through the dead-host relaunch path) mints
 # a fresh token.
 DAYTONA_MANAGED_TOKEN_TTL_S = 7 * 24 * 3600
+
+# Sprites preserve their filesystem and service definitions across warm/cold
+# transitions. Use the same policy bound as other durable managed sandboxes;
+# each resume mints and installs a fresh host token.
+SPRITES_MANAGED_TOKEN_TTL_S = 7 * 24 * 3600
 
 # Launch-token lifetime for the YAML boxlite path. Boxlite boxes have no
 # platform lifetime cap and persist across restarts, so the bound is policy,
@@ -607,6 +630,29 @@ def _modal_launcher_factory(
     return _build
 
 
+def _sprites_launcher_factory(
+    *,
+    api_url: str | None,
+    env: list[str] | None,
+    runtime: str | None,
+    install_spec: str | None,
+) -> Callable[[], SandboxLauncher]:
+    """Build the launcher factory for the YAML ``provider: sprites`` path."""
+
+    def _build() -> SandboxLauncher:
+        """Construct the Sprites launcher (lazy SDK import inside)."""
+        from omnigent.onboarding.sandboxes.sprites import SpritesSandboxLauncher
+
+        return SpritesSandboxLauncher(
+            api_url=api_url,
+            env=env,
+            runtime=runtime,
+            install_spec=install_spec,
+        )
+
+    return _build
+
+
 def _unsupported_launcher_factory(provider: str) -> Callable[[], SandboxLauncher]:
     """
     Build a factory that rejects launch for a not-yet-supported provider.
@@ -766,6 +812,14 @@ def parse_sandbox_config(raw: object) -> ManagedSandboxConfig | None:
             _parse_daytona_image(raw), _parse_daytona_env(raw)
         )
         token_ttl_s = DAYTONA_MANAGED_TOKEN_TTL_S
+    elif provider == "sprites":
+        launcher_factory = _sprites_launcher_factory(
+            api_url=_parse_provider_string(raw, "sprites", "api_url"),
+            env=_parse_provider_env(raw, "sprites"),
+            runtime=_parse_sprites_runtime(raw),
+            install_spec=_parse_provider_string(raw, "sprites", "install_spec"),
+        )
+        token_ttl_s = SPRITES_MANAGED_TOKEN_TTL_S
     elif provider == "boxlite":
         section = _boxlite_section(raw)
         _reject_unknown_boxlite_keys(
@@ -1576,6 +1630,14 @@ def _parse_provider_string(raw: dict[str, object], provider: str, key: str) -> s
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"server config 'sandbox.{provider}.{key}' must be a non-empty string")
     return value.strip()
+
+
+def _parse_sprites_runtime(raw: dict[str, object]) -> str | None:
+    """Extract and validate the optional Sprites runtime channel."""
+    runtime = _parse_provider_string(raw, "sprites", "runtime")
+    if runtime is not None and runtime not in {"default", "dev"}:
+        raise ValueError("server config 'sandbox.sprites.runtime' must be 'default' or 'dev'")
+    return runtime
 
 
 def _parse_provider_positive_int(raw: dict[str, object], provider: str, key: str) -> int | None:

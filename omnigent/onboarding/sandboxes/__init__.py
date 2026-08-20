@@ -58,6 +58,7 @@ _LAUNCHERS: dict[str, str] = {
     "lakebox": "omnigent.onboarding.sandboxes.lakebox:LakeboxLauncher",
     "modal": "omnigent.onboarding.sandboxes.modal:ModalSandboxLauncher",
     "daytona": "omnigent.onboarding.sandboxes.daytona:DaytonaSandboxLauncher",
+    "sprites": "omnigent.onboarding.sandboxes.sprites:SpritesSandboxLauncher",
     "boxlite": "omnigent.onboarding.sandboxes.boxlite:BoxliteSandboxLauncher",
     # CoreWeave Sandbox via the official cwsandbox SDK (the
     # `omnigent[cwsandbox]` extra), imported lazily like modal/daytona.

@@ -203,6 +203,9 @@ class FakeSandboxLauncher(SandboxLauncher):
         self.disk_gb: int | None = None
         self.idle_pause_after_s: int | None = None
         self.cluster: str | None = None
+        self.api_url: str | None = None
+        self.runtime: str | None = None
+        self.install_spec: str | None = None
         # Kubernetes ctor wiring (captured by install_fake_kubernetes_launcher).
         self.namespace: str | None = None
         self.secret_name: str | None = None
@@ -365,6 +368,31 @@ def install_fake_daytona_launcher(
         return fake
 
     monkeypatch.setattr(daytona_mod, "DaytonaSandboxLauncher", _ctor)
+
+
+def install_fake_sprites_launcher(
+    monkeypatch: Any,  # pytest.MonkeyPatch — Any avoids importing pytest in a helpers module
+    fake: FakeSandboxLauncher,
+) -> None:
+    """Substitute the fake for ``SpritesSandboxLauncher`` and record its config."""
+    import omnigent.onboarding.sandboxes.sprites as sprites_mod
+
+    def _ctor(
+        *,
+        api_url: str | None = None,
+        env: list[str] | None = None,
+        runtime: str | None = None,
+        install_spec: str | None = None,
+    ) -> FakeSandboxLauncher:
+        """Stand-in constructor recording the construction wiring."""
+        fake.provider = "sprites"
+        fake.api_url = api_url
+        fake.env = env
+        fake.runtime = runtime
+        fake.install_spec = install_spec
+        return fake
+
+    monkeypatch.setattr(sprites_mod, "SpritesSandboxLauncher", _ctor)
 
 
 def install_fake_boxlite_launcher(

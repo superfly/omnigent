@@ -24,6 +24,7 @@ from omnigent.server.managed_hosts import (
     KUBERNETES_MANAGED_TOKEN_TTL_S,
     MODAL_MANAGED_TOKEN_TTL_S,
     OPENSHELL_MANAGED_TOKEN_TTL_S,
+    SPRITES_MANAGED_TOKEN_TTL_S,
     ManagedSandboxConfig,
     RepoWorkspace,
     host_resume_supported,
@@ -49,6 +50,7 @@ from tests.server.helpers import (
     install_fake_kubernetes_launcher,
     install_fake_modal_launcher,
     install_fake_openshell_launcher,
+    install_fake_sprites_launcher,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -210,6 +212,52 @@ def test_parse_daytona_without_section_defaults(
     assert cfg.launcher_factory() is fake
     assert fake.image is None
     assert fake.env is None
+
+
+def test_parse_valid_sprites_config_builds_parameterized_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented Sprites block reaches the managed launcher intact."""
+    cfg = parse_sandbox_config(
+        {
+            "provider": "sprites",
+            "server_url": "https://srv.example.com/",
+            "sprites": {
+                "api_url": "https://api.example.test",
+                "env": ["OPENAI_API_KEY", "GIT_TOKEN"],
+                "runtime": "dev",
+                "install_spec": "omnigent @ https://example.test/omnigent.whl",
+            },
+        }
+    )
+    assert cfg is not None
+    assert cfg.server_url == "https://srv.example.com"
+    assert cfg.token_ttl_s == SPRITES_MANAGED_TOKEN_TTL_S
+    assert cfg.managed_launch_supported is True
+    assert cfg.provider == "sprites"
+
+    fake = FakeSandboxLauncher()
+    install_fake_sprites_launcher(monkeypatch, fake)
+    assert cfg.launcher_factory() is fake
+    assert fake.api_url == "https://api.example.test"
+    assert fake.env == ["OPENAI_API_KEY", "GIT_TOKEN"]
+    assert fake.runtime == "dev"
+    assert fake.install_spec == "omnigent @ https://example.test/omnigent.whl"
+
+
+def test_parse_sprites_without_section_uses_launcher_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only provider + server URL are required for a published Omnigent build."""
+    cfg = parse_sandbox_config({"provider": "sprites", "server_url": "https://s.example.com"})
+    assert cfg is not None
+    fake = FakeSandboxLauncher()
+    install_fake_sprites_launcher(monkeypatch, fake)
+    assert cfg.launcher_factory() is fake
+    assert fake.api_url is None
+    assert fake.env is None
+    assert fake.runtime is None
+    assert fake.install_spec is None
 
 
 def test_parse_valid_boxlite_cloud_config_builds_parameterized_factory(
@@ -732,6 +780,32 @@ def test_parse_kubernetes_invalid_block_fails_loud(
         (
             {"provider": "daytona", "server_url": "https://s", "daytona": {"env": ["", "X"]}},
             "sandbox.daytona.env",
+        ),
+        # sprites section present but malformed.
+        ({"provider": "sprites", "server_url": "https://s", "sprites": "x"}, "sandbox.sprites"),
+        (
+            {"provider": "sprites", "server_url": "https://s", "sprites": {"env": "OPENAI"}},
+            "sandbox.sprites.env",
+        ),
+        (
+            {
+                "provider": "sprites",
+                "server_url": "https://s",
+                "sprites": {"runtime": "experimental"},
+            },
+            "sandbox.sprites.runtime",
+        ),
+        (
+            {"provider": "sprites", "server_url": "https://s", "sprites": {"api_url": "  "}},
+            "sandbox.sprites.api_url",
+        ),
+        (
+            {
+                "provider": "sprites",
+                "server_url": "https://s",
+                "sprites": {"install_spec": ""},
+            },
+            "sandbox.sprites.install_spec",
         ),
         # boxlite section present but malformed.
         ({"provider": "boxlite", "server_url": "https://s", "boxlite": "x"}, "sandbox.boxlite"),

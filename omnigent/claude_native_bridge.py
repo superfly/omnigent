@@ -1116,6 +1116,7 @@ def build_hook_settings(
     launch_model: str | None = None,
     launch_permission_mode: str | None = None,
     launch_effort: str | None = None,
+    accept_bypass_permissions_warning: bool = False,
 ) -> dict[str, Any]:
     """
     Build invocation-local Claude Code hook settings.
@@ -1144,6 +1145,9 @@ def build_hook_settings(
         for the same re-exec hardening.
     :param launch_effort: Effective launch effort from ``--effort``.
         Mirrored into ``effortLevel`` for restart/re-exec parity.
+    :param accept_bypass_permissions_warning: Persist Claude Code's
+        invocation-local acknowledgement of its one-time bypass-permissions
+        warning. Callers must restrict this to sandboxed bypass launches.
     :returns: JSON-serializable Claude settings fragment.
     """
     python = python_executable or sys.executable
@@ -1335,6 +1339,8 @@ def build_hook_settings(
         settings["permissions"] = {"defaultMode": launch_permission_mode}
     if launch_effort and launch_effort in CLAUDE_EFFORTS:
         settings["effortLevel"] = launch_effort
+    if accept_bypass_permissions_warning:
+        settings["skipDangerousModePermissionPrompt"] = True
     if api_key_helper:
         settings["apiKeyHelper"] = api_key_helper
     # Override Claude Code's statusLine so we receive its stdin (the
@@ -1392,6 +1398,7 @@ def augment_claude_args(
     skills_filter: str | list[str] = "all",
     append_system_prompt: str | None = None,
     allowed_tools: tuple[str, ...] = (),
+    accept_bypass_permissions_warning: bool = False,
 ) -> list[str]:
     """
     Return Claude CLI args with Omnigent MCP/hook/skill injection.
@@ -1428,6 +1435,9 @@ def augment_claude_args(
         append through Claude Code's native ``--append-system-prompt`` flag.
     :param allowed_tools: Optional narrowly scoped Claude tool names to merge
         into ``--allowedTools`` without replacing the user's allowlist.
+    :param accept_bypass_permissions_warning: Include Claude Code's startup
+        acknowledgement in the invocation-local ``--settings`` payload.
+        Callers must restrict this to sandboxed bypass launches.
     :returns: Augmented argument list for the terminal resource.
     """
     mcp_config = build_mcp_config(bridge_dir, python_executable=python_executable)
@@ -1440,6 +1450,7 @@ def augment_claude_args(
         launch_model=_arg_value(claude_args, "--model"),
         launch_permission_mode=_arg_value(claude_args, "--permission-mode"),
         launch_effort=_arg_value(claude_args, "--effort"),
+        accept_bypass_permissions_warning=accept_bypass_permissions_warning,
     )
     args = _merge_disallowed_tools(list(claude_args), _OMNIGENT_DISALLOWED_TOOLS)
     args = _merge_allowed_tools(args, allowed_tools)

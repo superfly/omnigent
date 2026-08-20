@@ -12,6 +12,7 @@ import json
 import secrets
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any, Literal, cast
 
 import httpx
@@ -2422,10 +2423,20 @@ async def _maybe_wake_stale_resumable_managed_sandbox(
     ):
         return False
 
-    if host_registry is not None:
-        host_registry.deregister(conv.host_id)
-    if tunnel_registry is not None and conv.runner_id is not None:
-        tunnel_registry.deregister(conv.runner_id)
+    # Deregistering the old tunnel intentionally closes the transport used by
+    # its SSE relay. Mark the full handoff before touching either registry:
+    # Sprites can briefly auto-reconnect its persisted old service while the
+    # wake replaces it, and both of those disconnects are expected.
+    _managed_wake_sessions.add(session_id)
+    try:
+        await _retire_runner_relay_for_managed_wake(session_id)
+        if host_registry is not None:
+            host_registry.deregister(conv.host_id)
+        if tunnel_registry is not None and conv.runner_id is not None:
+            tunnel_registry.deregister(conv.runner_id)
+    except BaseException:
+        _managed_wake_sessions.discard(session_id)
+        raise
 
     _logger.info(
         "Managed host %s for session %s needs wake before reusing tunnels "
@@ -2444,6 +2455,21 @@ async def _maybe_wake_stale_resumable_managed_sandbox(
         app_state=app_state,
         conversation_store=conversation_store,
     )
+
+
+async def _retire_runner_relay_for_managed_wake(session_id: str) -> None:
+    """Cancel the relay bound to the runner a managed wake will replace."""
+    stale_relay = _runner_relay_tasks.get(session_id)
+    if stale_relay is None or stale_relay.task.done():
+        return
+    _logger.info(
+        "Managed wake: retiring stale runner relay for session %s (runner %s)",
+        session_id,
+        stale_relay.runner_id,
+    )
+    stale_relay.task.cancel()
+    with suppress(asyncio.CancelledError):
+        await stale_relay.task
 
 
 def _kick_managed_relaunch(
@@ -2583,11 +2609,12 @@ def _kick_managed_wake_impl(
         conv.host_id,
         session_id,
     )
+    _managed_wake_sessions.add(session_id)
     tracker.begin(session_id)
     # Seed the progress indicator immediately — the user is watching the
     # session page when the wake fires (the composer let them send into a
     # host_asleep session).
-    _publish_sandbox_status(session_id, "provisioning")
+    _publish_sandbox_status(session_id, "waking")
     wake_task = asyncio.create_task(
         _run_managed_wake(
             session_id=session_id,
@@ -2647,6 +2674,10 @@ async def _run_managed_wake(
     from omnigent.server.routes import sessions as _facade
 
     try:
+        # Some wake paths arrive after the provider has already dropped its
+        # tunnel; keep this second call as an idempotent backstop.
+        await _retire_runner_relay_for_managed_wake(session_id)
+
         # Wake the same sandbox in place; resume_managed_host is single-flight
         # per host and a no-op if it's already online.
         await resume_managed_host(conv.host_id, host_store, sandbox_config, force=True)
@@ -2709,6 +2740,8 @@ async def _run_managed_wake(
         _logger.exception("Managed host wake crashed for session %s", session_id)
         tracker.fail(session_id, "internal error during managed host wake")
         _publish_sandbox_status(session_id, "failed", "internal error during managed host wake")
+    finally:
+        _managed_wake_sessions.discard(session_id)
 
 
 async def _ensure_runner_session_initialized(
@@ -4418,7 +4451,17 @@ async def _relay_runner_stream(
             session_id,
             exc_info=True,
         )
-        if session_id in _intentional_stop_sessions:
+        if session_id in _managed_wake_sessions:
+            # A resumable managed sandbox replaces its runner as part of a
+            # normal cold wake. The old tunnel (and, on Sprites, a briefly
+            # auto-restarted persisted tunnel) may close during that handoff;
+            # the parked message is waiting on the managed-launch tracker, so
+            # this relay must exit quietly without publishing a task failure.
+            _logger.info(
+                "Relay: suppressing expected managed-wake disconnect for session=%s",
+                session_id,
+            )
+        elif session_id in _intentional_stop_sessions:
             # User clicked Stop: the Stop handler brought this runner's tunnel
             # down on purpose (see _stop_session_host_runner), so the drop is
             # expected — not a failure. Publish a quiet idle and clear any error

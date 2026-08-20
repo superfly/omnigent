@@ -6026,7 +6026,6 @@ async def _auto_create_claude_terminal(
         terminal_launch_args=session_launch_args,
         resume_external_session_id=resume_external_session_id,
     )
-
     # Pass ``ap_server_url`` so ``build_hook_settings`` registers the
     # claude-native ``PermissionRequest`` command hook and writes
     # permission_hook.json. Without it, the hook is silently omitted and
@@ -6044,6 +6043,14 @@ async def _auto_create_claude_terminal(
         agent_name=agent_name,
         skills_filter=skills_filter,
         api_key_helper=claude_config.api_key_helper if claude_config is not None else None,
+        # Claude Code 2.1+ adds a one-time, unhookable warning before entering
+        # bypassPermissions mode. On managed sandboxes such as Sprites, Claude
+        # may select that mode from the sandbox environment even when no
+        # explicit bypass flag appears in argv. The invocation-local
+        # --settings payload supersedes ~/.claude/settings.json, so include
+        # Claude's own acknowledgement at the sandbox boundary. It has no
+        # effect when Claude does not enter bypass mode.
+        accept_bypass_permissions_warning=os.environ.get("IS_SANDBOX") == "1",
     )
 
     # Let a registered launcher plugin (e.g. Databricks' isaac) rewrite the
@@ -8077,6 +8084,11 @@ def _has_live_async_tasks(
     )
 
 
+def _has_running_native_pane(statuses: Mapping[str, str]) -> bool:
+    """Return whether a native terminal is still executing a turn."""
+    return any(status == "running" for status in statuses.values())
+
+
 def register_timer(
     session_id: str,
     timer_id: str,
@@ -8464,6 +8476,7 @@ def create_runner_app(
         Used by the out-of-process runner's inactivity watchdog. Counts:
 
         * Foreground turns in ``_active_turns``.
+        * Native terminal turns whose latest pane status is ``running``.
         * Live ``sys_call_async`` tasks in ``_session_async_tasks`` (not
           ``done()``) — their results still need to land in the inbox.
         * Live ``sys_timer_set`` tasks in ``_session_timers`` — firing
@@ -8486,6 +8499,8 @@ def create_runner_app(
         :returns: ``True`` while delivery-critical work is outstanding.
         """
         if _active_turns:
+            return True
+        if _has_running_native_pane(_native_pane_status):
             return True
         if _has_live_async_tasks(_session_async_tasks):
             return True
