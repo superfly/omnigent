@@ -2732,6 +2732,26 @@ def test_augment_claude_args_mirrors_joined_model_arg_into_settings(
     assert "effortLevel" not in settings
 
 
+@pytest.mark.parametrize("accepted", [False, True])
+def test_augment_claude_args_scopes_bypass_warning_acceptance_to_caller(
+    tmp_path: Path,
+    accepted: bool,
+) -> None:
+    """The invocation settings contain the warning gate only when requested."""
+    args = augment_claude_args(
+        ("--permission-mode", "bypassPermissions"),
+        bridge_dir=tmp_path,
+        python_executable="/venv/bin/python",
+        accept_bypass_permissions_warning=accepted,
+    )
+
+    settings = json.loads(Path(args[args.index("--settings") + 1]).read_text())
+    if accepted:
+        assert settings["skipDangerousModePermissionPrompt"] is True
+    else:
+        assert "skipDangerousModePermissionPrompt" not in settings
+
+
 def test_augment_claude_args_uses_last_repeated_launch_override(
     tmp_path: Path,
 ) -> None:
