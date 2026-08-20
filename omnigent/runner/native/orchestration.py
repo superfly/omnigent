@@ -6545,6 +6545,10 @@ async def _auto_create_claude_terminal(
         # The route-turn hook is registered only when this session can
         # actually route; otherwise every submit would pay its round trip.
         turn_routing=_claude_turn_router is not None,
+        # Claude Code's bypass mode has a one-time terminal confirmation that
+        # cannot be answered by the web permission hook. A managed sandbox is
+        # the trust boundary where Omnigent may safely acknowledge it.
+        accept_bypass_permissions_warning=os.environ.get("IS_SANDBOX") == "1",
     )
 
     # Let a registered launcher plugin (e.g. Databricks' isaac) rewrite the
