@@ -2070,6 +2070,7 @@ def create_runner_app(
     _active_turns: dict[str, asyncio.Task[None] | None] = {}
     app.state.active_turns = _active_turns
     _native_pane_status: dict[str, str] = {}
+    app.state.native_pane_status = _native_pane_status
     _session_message_buffers: dict[str, list[dict[str, Any]]] = {}
     app.state.session_message_buffers = _session_message_buffers
     _author_attribution_sessions: set[str] = set()
@@ -2102,6 +2103,8 @@ def create_runner_app(
 
     def _has_active_work() -> bool:
         if _active_turns:
+            return True
+        if any(status in {"running", "waiting"} for status in _native_pane_status.values()):
             return True
         if _has_live_async_tasks(_session_async_tasks):
             return True

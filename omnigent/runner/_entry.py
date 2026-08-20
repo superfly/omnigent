@@ -66,6 +66,7 @@ _SPRITE_TASK_EXPIRE = "5m"
 _SPRITE_TASK_REFRESH_INTERVAL_S = 60.0
 _SPRITE_TASK_POLL_INTERVAL_S = 1.0
 _SPRITE_TASK_RETRY_INTERVAL_S = 5.0
+_SPRITE_TASK_RELEASE_GRACE_S = 30.0
 _logger = logging.getLogger(__name__)
 
 # Module-level singleton set once at runner startup. All later
@@ -271,6 +272,7 @@ async def _run_sprite_activity_lease(
     client: httpx.AsyncClient | None = None,
     poll_interval_s: float = _SPRITE_TASK_POLL_INTERVAL_S,
     refresh_interval_s: float = _SPRITE_TASK_REFRESH_INTERVAL_S,
+    release_grace_s: float = _SPRITE_TASK_RELEASE_GRACE_S,
 ) -> None:
     """Hold a Sprite active only while its runner is doing agent work.
 
@@ -307,25 +309,32 @@ async def _run_sprite_activity_lease(
         while True:
             active = has_active_work()
             now = loop.time()
-            if active and now >= next_refresh_at:
-                try:
-                    response = await client.put(task_path, json={"expire": _SPRITE_TASK_EXPIRE})
-                    response.raise_for_status()
-                except httpx.HTTPError:
-                    _logger.warning(
-                        "failed to refresh Sprite activity task; active work may be suspended",
-                        exc_info=True,
-                    )
-                    next_refresh_at = now + _SPRITE_TASK_RETRY_INTERVAL_S
-                else:
-                    held = True
-                    next_refresh_at = now + refresh_interval_s
-                    next_release_at = 0.0
-            elif not active and held and now >= next_release_at:
-                if await _delete():
-                    held = False
-                else:
-                    next_release_at = now + _SPRITE_TASK_RETRY_INTERVAL_S
+            if active:
+                next_release_at = 0.0
+                if now >= next_refresh_at:
+                    try:
+                        response = await client.put(
+                            task_path,
+                            json={"expire": _SPRITE_TASK_EXPIRE},
+                        )
+                        response.raise_for_status()
+                    except httpx.HTTPError:
+                        _logger.warning(
+                            "failed to refresh Sprite activity task; active work may be suspended",
+                            exc_info=True,
+                        )
+                        next_refresh_at = now + _SPRITE_TASK_RETRY_INTERVAL_S
+                    else:
+                        held = True
+                        next_refresh_at = now + refresh_interval_s
+            elif held:
+                if next_release_at == 0.0:
+                    next_release_at = now + release_grace_s
+                if now >= next_release_at:
+                    if await _delete():
+                        held = False
+                    else:
+                        next_release_at = now + _SPRITE_TASK_RETRY_INTERVAL_S
             await asyncio.sleep(poll_interval_s)
     finally:
         if held:

@@ -52,6 +52,7 @@ async def test_active_work_upserts_then_releases_task() -> None:
                 client=client,
                 poll_interval_s=0.005,
                 refresh_interval_s=60,
+                release_grace_s=0,
             )
         )
         await _wait_until(lambda: any(method == "PUT" for method, _, _ in requests))
@@ -69,6 +70,47 @@ async def test_active_work_upserts_then_releases_task() -> None:
         ),
         ("DELETE", "/v1/tasks/omnigent-runner-123", None),
     ]
+
+
+async def test_transient_idle_gap_does_not_release_task() -> None:
+    """A brief native-tool status gap keeps the Sprite activity hold."""
+    methods: list[str] = []
+    active = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(204 if request.method == "DELETE" else 200)
+
+    async with httpx.AsyncClient(
+        base_url="http://sprite",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        task = asyncio.create_task(
+            _run_sprite_activity_lease(
+                has_active_work=lambda: active,
+                task_name="omnigent-runner-123",
+                client=client,
+                poll_interval_s=0.005,
+                refresh_interval_s=60,
+                release_grace_s=0.05,
+            )
+        )
+        await _wait_until(lambda: "PUT" in methods)
+        active = False
+        await asyncio.sleep(0.02)
+        assert "DELETE" not in methods
+
+        active = True
+        await asyncio.sleep(0.02)
+        assert "DELETE" not in methods
+
+        active = False
+        await _wait_until(lambda: "DELETE" in methods)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert methods == ["PUT", "DELETE"]
 
 
 async def test_cancellation_releases_live_task() -> None:
@@ -89,6 +131,7 @@ async def test_cancellation_releases_live_task() -> None:
                 task_name="omnigent-runner-123",
                 client=client,
                 poll_interval_s=0.005,
+                release_grace_s=0,
             )
         )
         await _wait_until(lambda: "PUT" in methods)
@@ -118,6 +161,7 @@ async def test_missing_task_on_release_is_success() -> None:
                 task_name="omnigent-runner-123",
                 client=client,
                 poll_interval_s=0.005,
+                release_grace_s=0,
             )
         )
         await _wait_until(lambda: "PUT" in methods)
